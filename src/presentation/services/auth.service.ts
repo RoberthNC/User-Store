@@ -1,6 +1,11 @@
-import { bcryptAdapter } from "../../config";
+import { JwtAdapter, bcryptAdapter } from "../../config";
 import { prisma } from "../../data/postgres";
-import { CustomError, RegisterUserDto, UserEntity } from "../../domain";
+import {
+  CustomError,
+  LoginUserDto,
+  RegisterUserDto,
+  UserEntity,
+} from "../../domain";
 export class AuthService {
   constructor() {}
 
@@ -24,5 +29,31 @@ export class AuthService {
     } catch (err) {
       throw CustomError.internalServer(`${err}`);
     }
+  }
+
+  public async loginUser(loginUserDto: LoginUserDto) {
+    const user = await prisma.user.findFirst({
+      where: {
+        email: loginUserDto.email,
+      },
+    });
+    if (!user) throw CustomError.badRequest("Email not exists");
+    const isMatching = bcryptAdapter.compare(
+      loginUserDto.password,
+      user.password
+    );
+    if (!isMatching) throw CustomError.badRequest("Password is not valid");
+    const { password, ...userEntity } = UserEntity.fromObject(user);
+
+    const token = await JwtAdapter.generateToken({
+      id: user.id,
+      email: user.email,
+    });
+    if (!token) throw CustomError.internalServer("Error while creating jwt");
+
+    return {
+      user: userEntity,
+      token: token,
+    };
   }
 }
