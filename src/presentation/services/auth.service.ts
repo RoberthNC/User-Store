@@ -1,5 +1,6 @@
-import { JwtAdapter, bcryptAdapter } from "../../config";
+import { JwtAdapter, bcryptAdapter, envs } from "../../config";
 import { prisma } from "../../data/postgres";
+import { EmailService } from "./email.service";
 import {
   CustomError,
   LoginUserDto,
@@ -7,7 +8,7 @@ import {
   UserEntity,
 } from "../../domain";
 export class AuthService {
-  constructor() {}
+  constructor(private readonly emailService: EmailService) {}
 
   public async registerUser(registerUserDto: RegisterUserDto) {
     const existsUser = await prisma.user.findFirst({
@@ -21,10 +22,14 @@ export class AuthService {
       const user = await prisma.user.create({
         data: registerUserDto,
       });
+      await this.sendEmailValidationLink(user.email);
       const { password, ...userEntity } = UserEntity.fromObject(user);
+      const token = await JwtAdapter.generateToken({ id: user.id });
+      if (!token) throw CustomError.internalServer("Error while creating JWT");
+
       return {
         user: userEntity,
-        token: "ABC",
+        token: token,
       };
     } catch (err) {
       throw CustomError.internalServer(`${err}`);
@@ -47,13 +52,56 @@ export class AuthService {
 
     const token = await JwtAdapter.generateToken({
       id: user.id,
-      email: user.email,
     });
-    if (!token) throw CustomError.internalServer("Error while creating jwt");
+    if (!token) throw CustomError.internalServer("Error while creating JWT");
 
     return {
       user: userEntity,
       token: token,
     };
   }
+
+  private sendEmailValidationLink = async (email: string) => {
+    const token = JwtAdapter.generateToken({ email });
+    if (!token) throw CustomError.internalServer("Error getting token");
+    const link = `${envs.WEBSERVICE_URL}/auth/validate-email/${token}`;
+    const html = `
+      <h1>Validate your email</h1>
+      <p>Click on the following link to validate your email:</p>
+      <a href=${link}>Validate your email: ${email}</a>
+    `;
+    const options = {
+      to: email,
+      subject: "Validate your email",
+      htmlBody: html,
+    };
+    const wasSent = await this.emailService.sendEmail(options);
+    if (!wasSent) {
+      throw CustomError.internalServer("Error while sending email...");
+    }
+    return true;
+  };
+
+  public validateEmail = async (token: string) => {
+    const payload = await JwtAdapter.validateToken(token);
+    if (!payload) throw CustomError.unAuthorized("Invalid token");
+    const { email } = payload as { email: string };
+    if (!email)
+      throw CustomError.internalServer("Email does not exists in token");
+    const user = await prisma.user.findFirst({
+      where: {
+        email: email,
+      },
+    });
+    if (!user) throw CustomError.internalServer("Email not exists");
+    await prisma.user.update({
+      where: {
+        id: user.id,
+      },
+      data: {
+        emailValidated: true,
+      },
+    });
+    return true;
+  };
 }
